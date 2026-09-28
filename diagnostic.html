@@ -22,7 +22,7 @@
 
 <script>
 (function(){
-  const WORKER_URL = 'https://termocorchat.vyper1309-cc.workers.dev/';
+  const WORKER_URL = 'https://lucky-sun-4a17.vyper1309-cc.workers.dev/';
   const out = document.getElementById('out');
   const btn = document.getElementById('run');
   let lines = [];
@@ -57,6 +57,10 @@
     const s1 = await attempt(WORKER_URL, { mode: 'no-cors' }, 15000);
     log('1. Worker accesibil din browser: ' + (s1.ok ? 'DA' : 'NU (' + s1.error + ')'));
 
+    // 1b. Ce versiune de cod rulează Worker-ul? (endpoint public /version)
+    const sv = await attempt(WORKER_URL + 'version', { method: 'GET' }, 15000);
+    show('1b. Versiune Worker (/version)', sv);
+
     // 2. Test de sănătate cu CORS (GET simplu, fără cost)
     const s2 = await attempt(WORKER_URL, { method: 'GET' }, 15000);
     show('2. Test de sănătate (GET cu CORS)', s2);
@@ -81,6 +85,8 @@
     let msg;
     if (!s1.ok) {
       msg = 'Cererea nu ajunge deloc la Worker. Cauze posibile: o extensie de tip ad-blocker sau protecție de confidențialitate, o rețea/firewall care blochează workers.dev, sau lipsă de internet. Încearcă fără extensii, în fereastră incognito, sau de pe telefon pe date mobile.';
+    } else if (!sv.ok || sv.status !== 200) {
+      msg = 'Worker-ul rulează cod VECHI sau codul nou nu a fost publicat (nu răspunde la /version). În Cloudflare: deschide Worker-ul (lucky-sun-4a17) → Edit code → șterge tot → lipește termocor-ai-worker.js → apasă Deploy (nu doar Save). Apoi deschide în browser ' + WORKER_URL + 'version — trebuie să vezi „version”: 4.';
     } else if (!s2.ok) {
       msg = 'Worker-ul răspunde, dar browserul îi blochează răspunsul (CORS) chiar și la un test simplu. Cel mai probabil codul din Worker nu s-a publicat corect: în Cloudflare, Edit code → ștergi tot → lipești termocor-ai-worker.js → Deploy. Verifică și că adresa Origine de mai sus e exact https://vyper1309cc-ship-it.github.io';
     } else if (s2.status === 403) {
