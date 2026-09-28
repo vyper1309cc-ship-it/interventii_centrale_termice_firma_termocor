@@ -1024,9 +1024,11 @@
     const timer = setTimeout(function(){ ctrl.abort(); }, 25000);
     let errCode = 'rețea';
     try{
+      // text/plain = „cerere simplă” pentru browser: nu mai are nevoie de preflight (OPTIONS).
+      // Worker-ul citește oricum corpul ca JSON.
       const res = await fetch(AI_ENDPOINT, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify({ messages: aiHistory }),
         signal: ctrl.signal
       });

@@ -16,7 +16,7 @@
 </head>
 <body>
 <h1>Test conexiune asistent AI</h1>
-<p class="note">Apasă butonul, așteaptă câteva secunde, apoi copiază tot textul de mai jos și trimite-l. Testul trimite un mesaj scurt către asistent, deci consumă o fracțiune minimă din credit.</p>
+<p class="note">Apasă butonul, așteaptă câteva secunde, apoi copiază tot textul de mai jos și trimite-l. Testul trimite un singur mesaj scurt către asistent, deci consumă o fracțiune minimă din credit.</p>
 <p><button id="run">Rulează testul</button></p>
 <pre id="out">Aștept să apeși butonul...</pre>
 
@@ -28,67 +28,77 @@
   let lines = [];
   function log(t){ lines.push(t); out.textContent = lines.join('\n'); }
 
-  async function withTimeout(promiseFactory, ms){
+  async function attempt(url, opts, ms){
     const ctrl = new AbortController();
     const timer = setTimeout(function(){ ctrl.abort(); }, ms);
-    try { return await promiseFactory(ctrl.signal); } finally { clearTimeout(timer); }
+    try {
+      const res = await fetch(url, Object.assign({}, opts, { signal: ctrl.signal }));
+      let body = '';
+      try { body = await res.text(); } catch (e) {}
+      return { ok: true, status: res.status, body: body };
+    } catch (e) {
+      return { ok: false, error: (e && e.name) + ': ' + (e && e.message) };
+    } finally { clearTimeout(timer); }
+  }
+  function show(label, r){
+    if (r.ok) log(label + ': HTTP ' + r.status + '  ' + r.body.slice(0, 200));
+    else log(label + ': EȘUAT (' + r.error + ')');
   }
 
   btn.addEventListener('click', async function(){
     btn.disabled = true;
     lines = [];
     log('Adresa paginii: ' + location.href);
-    log('Origine (trimisă către Worker): ' + location.origin);
+    log('Origine: ' + location.origin);
     log('Worker: ' + WORKER_URL);
     log('');
 
-    // Pasul 1: ajunge cererea la Worker? (fără CORS, doar accesibilitate)
-    let reachable = false;
-    try {
-      await withTimeout(function(signal){ return fetch(WORKER_URL, { mode: 'no-cors', signal: signal }); }, 15000);
-      reachable = true;
-      log('Pasul 1 — Worker-ul e accesibil din browser: DA');
-    } catch (e) {
-      log('Pasul 1 — Worker-ul e accesibil din browser: NU (' + (e && e.name) + ')');
-    }
+    // 1. Ajunge cererea la Worker? (fără CORS)
+    const s1 = await attempt(WORKER_URL, { mode: 'no-cors' }, 15000);
+    log('1. Worker accesibil din browser: ' + (s1.ok ? 'DA' : 'NU (' + s1.error + ')'));
 
-    // Pasul 2: cererea reală, exact ca în chat
-    let result = null;
-    try {
-      const res = await withTimeout(function(signal){
-        return fetch(WORKER_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ messages: [{ role: 'user', content: 'Test: răspunde cu un singur cuvânt.' }] }),
-          signal: signal
-        });
-      }, 25000);
-      let body = '';
-      try { body = await res.text(); } catch (e) {}
-      result = { status: res.status, body: body };
-      log('Pasul 2 — cerere reală către asistent: răspuns HTTP ' + res.status);
-      log('Conținut: ' + body.slice(0, 300));
-    } catch (e) {
-      log('Pasul 2 — cerere reală către asistent: EȘUATĂ (' + (e && e.name) + ': ' + (e && e.message) + ')');
-    }
+    // 2. Test de sănătate cu CORS (GET simplu, fără cost)
+    const s2 = await attempt(WORKER_URL, { method: 'GET' }, 15000);
+    show('2. Test de sănătate (GET cu CORS)', s2);
 
-    // Interpretare
+    // 3. Cerere reală, ca în chat: text/plain, fără preflight
+    const s3 = await attempt(WORKER_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ messages: [{ role: 'user', content: 'Test: răspunde cu un singur cuvânt.' }] })
+    }, 25000);
+    show('3. Cerere reală (text/plain, fără preflight)', s3);
+
+    // 4. Cerere JSON cu preflight, cu corp gol (fără cost; așteptăm 400)
+    const s4 = await attempt(WORKER_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: [] })
+    }, 15000);
+    show('4. Cerere JSON cu preflight (corp gol, fără cost)', s4);
+
     log('');
-    if (!reachable) {
-      log('CONCLUZIE: cererea nu ajunge deloc la Worker. Cauze posibile: o extensie de tip ad-blocker sau protecție de confidențialitate, o rețea/firewall care blochează workers.dev, sau lipsă de internet. Încearcă fără extensii, într-o fereastră incognito, sau de pe telefon pe date mobile.');
-    } else if (!result) {
-      log('CONCLUZIE: Worker-ul răspunde, dar browserul blochează răspunsul (CORS). Cel mai probabil Worker-ul nu are încă ultima versiune de cod (Edit code → lipești termocor-ai-worker.js → Deploy), sau pagina rulează pe o adresă diferită de cea permisă. Verifică „Origine” de mai sus: trebuie să fie exact https://vyper1309cc-ship-it.github.io');
-    } else if (result.status === 200) {
-      log('CONCLUZIE: totul funcționează. Asistentul AI e conectat corect.');
-    } else if (result.status === 403) {
-      log('CONCLUZIE: Worker-ul refuză adresa acestei pagini. Origine curentă: ' + location.origin + ' — trebuie să fie exact https://vyper1309cc-ship-it.github.io');
-    } else if (result.status === 500) {
-      log('CONCLUZIE: eroare în Worker (vezi „Conținut”). Dacă scrie not_configured, secretul ANTHROPIC_API_KEY lipsește sau nu ai dat Deploy după ce l-ai adăugat.');
-    } else if (result.status === 502) {
-      log('CONCLUZIE: Worker-ul a ajuns la Anthropic, dar acesta a refuzat. Vezi „Conținut”: upstream_status 401 = cheie greșită; 400 = de obicei credit lipsă în contul Anthropic.');
+    let msg;
+    if (!s1.ok) {
+      msg = 'Cererea nu ajunge deloc la Worker. Cauze posibile: o extensie de tip ad-blocker sau protecție de confidențialitate, o rețea/firewall care blochează workers.dev, sau lipsă de internet. Încearcă fără extensii, în fereastră incognito, sau de pe telefon pe date mobile.';
+    } else if (!s2.ok) {
+      msg = 'Worker-ul răspunde, dar browserul îi blochează răspunsul (CORS) chiar și la un test simplu. Cel mai probabil codul din Worker nu s-a publicat corect: în Cloudflare, Edit code → ștergi tot → lipești termocor-ai-worker.js → Deploy. Verifică și că adresa Origine de mai sus e exact https://vyper1309cc-ship-it.github.io';
+    } else if (s2.status === 403) {
+      msg = 'Worker-ul refuză adresa acestei pagini (' + location.origin + '). Trebuie să fie exact https://vyper1309cc-ship-it.github.io';
+    } else if (s2.status !== 200) {
+      msg = 'Worker-ul rulează o versiune veche a codului (răspunde cu ' + s2.status + ' la testul de sănătate). Lipește ultima versiune din termocor-ai-worker.js în Cloudflare (Edit code) și dă Deploy.';
+    } else if (s3.ok && s3.status === 200) {
+      msg = 'TOTUL FUNCȚIONEAZĂ: asistentul AI e conectat corect.' + (s4.ok ? '' : ' (Cererea JSON cu preflight e blocată de browser, dar chatul nu o folosește, deci nu contează.)');
+    } else if (!s3.ok) {
+      msg = 'Testul de sănătate trece, dar cererea reală e blocată de browser. Trimite-mi tot textul de mai sus.';
+    } else if (s3.status === 500) {
+      msg = 'Eroare în Worker (vezi conținutul de la pasul 3). Dacă scrie not_configured, secretul ANTHROPIC_API_KEY lipsește sau nu ai dat Deploy după ce l-ai adăugat.';
+    } else if (s3.status === 502) {
+      msg = 'Worker-ul a ajuns la Anthropic, dar acesta a refuzat. La pasul 3: upstream_status 401 = cheie greșită; 400 = de obicei credit lipsă în contul Anthropic (Billing).';
     } else {
-      log('CONCLUZIE: răspuns neașteptat (' + result.status + '). Trimite-mi textul de mai sus.');
+      msg = 'Răspuns neașteptat la pasul 3 (' + s3.status + '). Trimite-mi tot textul de mai sus.';
     }
+    log('CONCLUZIE: ' + msg);
     btn.disabled = false;
   });
 })();
