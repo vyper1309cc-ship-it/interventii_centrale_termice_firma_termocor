@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex">
+<title>Test conexiune asistent AI — Termocor</title>
+<style>
+  body{font-family:system-ui,Arial,sans-serif;max-width:640px;margin:32px auto;padding:0 20px;color:#1B2430;line-height:1.5;}
+  h1{font-size:1.3rem;}
+  button{background:#DD4E28;color:#fff;border:0;border-radius:4px;padding:12px 22px;font-size:1rem;cursor:pointer;}
+  button:disabled{opacity:.6;cursor:default;}
+  pre{background:#F8F6F0;border:1px solid #D6D0C0;border-radius:4px;padding:16px;white-space:pre-wrap;word-break:break-word;font-size:.9rem;}
+  .note{color:#4E5D6C;font-size:.9rem;}
+</style>
+</head>
+<body>
+<h1>Test conexiune asistent AI</h1>
+<p class="note">Apasă butonul, așteaptă câteva secunde, apoi copiază tot textul de mai jos și trimite-l. Testul trimite un mesaj scurt către asistent, deci consumă o fracțiune minimă din credit.</p>
+<p><button id="run">Rulează testul</button></p>
+<pre id="out">Aștept să apeși butonul...</pre>
+
+<script>
+(function(){
+  const WORKER_URL = 'https://termocorchat.vyper1309-cc.workers.dev/';
+  const out = document.getElementById('out');
+  const btn = document.getElementById('run');
+  let lines = [];
+  function log(t){ lines.push(t); out.textContent = lines.join('\n'); }
+
+  async function withTimeout(promiseFactory, ms){
+    const ctrl = new AbortController();
+    const timer = setTimeout(function(){ ctrl.abort(); }, ms);
+    try { return await promiseFactory(ctrl.signal); } finally { clearTimeout(timer); }
+  }
+
+  btn.addEventListener('click', async function(){
+    btn.disabled = true;
+    lines = [];
+    log('Adresa paginii: ' + location.href);
+    log('Origine (trimisă către Worker): ' + location.origin);
+    log('Worker: ' + WORKER_URL);
+    log('');
+
+    // Pasul 1: ajunge cererea la Worker? (fără CORS, doar accesibilitate)
+    let reachable = false;
+    try {
+      await withTimeout(function(signal){ return fetch(WORKER_URL, { mode: 'no-cors', signal: signal }); }, 15000);
+      reachable = true;
+      log('Pasul 1 — Worker-ul e accesibil din browser: DA');
+    } catch (e) {
+      log('Pasul 1 — Worker-ul e accesibil din browser: NU (' + (e && e.name) + ')');
+    }
+
+    // Pasul 2: cererea reală, exact ca în chat
+    let result = null;
+    try {
+      const res = await withTimeout(function(signal){
+        return fetch(WORKER_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ messages: [{ role: 'user', content: 'Test: răspunde cu un singur cuvânt.' }] }),
+          signal: signal
+        });
+      }, 25000);
+      let body = '';
+      try { body = await res.text(); } catch (e) {}
+      result = { status: res.status, body: body };
+      log('Pasul 2 — cerere reală către asistent: răspuns HTTP ' + res.status);
+      log('Conținut: ' + body.slice(0, 300));
+    } catch (e) {
+      log('Pasul 2 — cerere reală către asistent: EȘUATĂ (' + (e && e.name) + ': ' + (e && e.message) + ')');
+    }
+
+    // Interpretare
+    log('');
+    if (!reachable) {
+      log('CONCLUZIE: cererea nu ajunge deloc la Worker. Cauze posibile: o extensie de tip ad-blocker sau protecție de confidențialitate, o rețea/firewall care blochează workers.dev, sau lipsă de internet. Încearcă fără extensii, într-o fereastră incognito, sau de pe telefon pe date mobile.');
+    } else if (!result) {
+      log('CONCLUZIE: Worker-ul răspunde, dar browserul blochează răspunsul (CORS). Cel mai probabil Worker-ul nu are încă ultima versiune de cod (Edit code → lipești termocor-ai-worker.js → Deploy), sau pagina rulează pe o adresă diferită de cea permisă. Verifică „Origine” de mai sus: trebuie să fie exact https://vyper1309cc-ship-it.github.io');
+    } else if (result.status === 200) {
+      log('CONCLUZIE: totul funcționează. Asistentul AI e conectat corect.');
+    } else if (result.status === 403) {
+      log('CONCLUZIE: Worker-ul refuză adresa acestei pagini. Origine curentă: ' + location.origin + ' — trebuie să fie exact https://vyper1309cc-ship-it.github.io');
+    } else if (result.status === 500) {
+      log('CONCLUZIE: eroare în Worker (vezi „Conținut”). Dacă scrie not_configured, secretul ANTHROPIC_API_KEY lipsește sau nu ai dat Deploy după ce l-ai adăugat.');
+    } else if (result.status === 502) {
+      log('CONCLUZIE: Worker-ul a ajuns la Anthropic, dar acesta a refuzat. Vezi „Conținut”: upstream_status 401 = cheie greșită; 400 = de obicei credit lipsă în contul Anthropic.');
+    } else {
+      log('CONCLUZIE: răspuns neașteptat (' + result.status + '). Trimite-mi textul de mai sus.');
+    }
+    btn.disabled = false;
+  });
+})();
+</script>
+</body>
+</html>
