@@ -752,6 +752,18 @@
   let stepIndex = -1;       // -1 = meniu principal, 0..n = pas din flux
   let awaitingText = false; // dacă pasul curent așteaptă text tastat
 
+  // ---- Mod suplimentar: asistent AI (opțional) ----
+  // Pune aici URL-ul Worker-ului de Cloudflare. Cât timp rămâne
+  // placeholder-ul, butonul pentru asistentul AI nu apare deloc.
+  const AI_ENDPOINT = 'https://termocorchat.vyper1309-cc.workers.dev/';
+  const aiEnabled = AI_ENDPOINT.indexOf('http') === 0;
+  const AI_MARKER = '<<<SOLICITARE_COMPLETA>>>';
+  const MAX_AI_TURNS = 25;      // mesaje maxime ale clientului / conversație
+  const MAX_AI_CHARS = 500;     // lungime maximă a unui mesaj
+  let aiMode = false;
+  let aiHistory = [];           // { role:'user'|'assistant', content }
+  let aiBusy = false;
+
   const flowSteps = [
     { key:'nume', prompt:'Care este numele dumneavoastră?', type:'text', validate:function(v){ return v.trim() ? null : 'Introduceți un nume.'; } },
     { key:'telefon', prompt:'Pe ce număr de telefon vă putem contacta?', type:'text', validate:function(v){ return v.replace(/[^0-9]/g,'').length>=9 ? null : 'Introduceți un număr de telefon valid (minim 9 cifre).'; } },
@@ -821,10 +833,9 @@
     collected = {};
     setTextInputEnabled(false);
     addMessage('Bună! Sunt asistentul Termocor. Cu ce vă pot ajuta?', 'bot', 'Asistent');
-    addChoices(
-      ['Solicit o intervenție', 'Program de lucru', 'Ce servicii oferiți?', 'Sună direct'],
-      handleMenuPick
-    );
+    const options = ['Solicit o intervenție', 'Program de lucru', 'Ce servicii oferiți?', 'Sună direct'];
+    if(aiEnabled) options.splice(1, 0, 'Întreabă asistentul AI');
+    addChoices(options, handleMenuPick);
   }
 
   function handleMenuPick(choice){
@@ -832,6 +843,8 @@
     if(choice === 'Solicit o intervenție'){
       stepIndex = 0;
       askStep();
+    } else if(choice === 'Întreabă asistentul AI'){
+      startAiMode();
     } else if(choice === 'Program de lucru'){
       addMessage('Luni – Vineri: 08:00 – 20:00. Pentru avarii, intervenim non-stop, 24/7.', 'bot', 'Asistent');
       setTimeout(showMainMenu, 300);
@@ -858,21 +871,12 @@
       setTextInputEnabled(true);
       input.focus();
       if(step.skippable){
-        addChoices([], null, 'Sar peste');
-        // atașăm handler separat pentru chip-ul de skip, generat mai jos
-        const chips = messagesEl.querySelectorAll('.chat-choices');
-        const lastWrap = chips[chips.length - 1];
-        if(lastWrap){
-          const skipBtn = lastWrap.querySelector('.chat-chip.skip');
-          if(skipBtn){
-            skipBtn.addEventListener('click', function(){
-              addMessage('(sărit)', 'user', 'Client');
-              collected[step.key] = '';
-              stepIndex++;
-              askStep();
-            });
-          }
-        }
+        addChoices([], function(){
+          addMessage('(sărit)', 'user', 'Client');
+          collected[step.key] = '';
+          stepIndex++;
+          askStep();
+        }, 'Sar peste');
       }
     }
   }
@@ -905,7 +909,7 @@
     addChoices(['Da, trimite solicitarea', 'Vreau să modific'], function(choice){
       addMessage(choice, 'user', 'Client');
       if(choice === 'Da, trimite solicitarea'){
-        submitRequest();
+        submitRequest(collected);
       } else {
         stepIndex = 0;
         collected = {};
@@ -914,40 +918,196 @@
     });
   }
 
-  function submitRequest(){
+  function submitRequest(d){
     const ref = randomTicketId();
     const responseTimes = {
       'Programare normală': 'în cursul zilei lucrătoare',
       'Urgent — azi/mâine': 'în cel mult 60 de minute',
       'Avarie — fără căldură': 'în cel mult 30 de minute'
     };
-    const eta = responseTimes[collected.urgenta] || 'cât mai curând';
+    const eta = responseTimes[d.urgenta] || 'cât mai curând';
     const conversatie = transcript.map(function(m){ return m.role + ': ' + m.text; }).join('\n\n');
 
-    // 1) Google Sheets (baza de date) — include și transcriptul complet al discuției
+    // Google Sheets (baza de date) — include și transcriptul complet al discuției.
+    // Apps Script trimite apoi automat emailul către client și notificarea către proprietar.
     if(typeof window.TERMOCOR_SHEETS_ENDPOINT === 'string' && window.TERMOCOR_SHEETS_ENDPOINT.indexOf('http') === 0){
       fetch(window.TERMOCOR_SHEETS_ENDPOINT, {
         method: 'POST', mode: 'no-cors', keepalive: true,
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify({
-          ref: ref, nume: collected.nume, telefon: collected.telefon, email: collected.email || '',
-          adresa: collected.adresa, echipament: collected.echipament, tipSolicitare: collected.tipSolicitare,
-          urgenta: collected.urgenta, dataPreferata: '', descriere: collected.descriere || '',
+          ref: ref, nume: d.nume, telefon: d.telefon, email: d.email || '',
+          adresa: d.adresa, echipament: d.echipament, tipSolicitare: d.tipSolicitare,
+          urgenta: d.urgenta, dataPreferata: '', descriere: d.descriere || '',
           conversatie: conversatie
         })
       });
     }
 
-    // Notificarea către proprietar și confirmarea către client se
-    // trimit acum automat din Apps Script (mai sigur, fără FormSubmit).
+    transcript = []; // următoarea solicitare pornește cu un istoric curat
 
     addMessage('Solicitarea a fost înregistrată cu numărul ' + ref + '. Un tehnician Termocor vă contactează ' + eta + '.', 'bot', 'Asistent');
     setTimeout(showMainMenu, 600);
   }
 
+  // ================= Mod asistent AI =================
+  function showTyping(){
+    removeTyping();
+    const div = document.createElement('div');
+    div.className = 'chat-typing';
+    div.id = 'chatTyping';
+    div.textContent = 'Asistentul scrie...';
+    messagesEl.appendChild(div);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+  function removeTyping(){
+    const t = document.getElementById('chatTyping');
+    if(t) t.remove();
+  }
+
+  function showAiExit(){
+    const old = messagesEl.querySelector('.chat-choices.ai-exit');
+    if(old) old.remove();
+    const wrap = document.createElement('div');
+    wrap.className = 'chat-choices ai-exit';
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'chat-chip skip';
+    chip.textContent = 'Înapoi la meniu';
+    chip.addEventListener('click', function(){ exitAiMode(true); });
+    wrap.appendChild(chip);
+    messagesEl.appendChild(wrap);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  function exitAiMode(showMenu){
+    aiMode = false;
+    aiHistory = [];
+    aiBusy = false;
+    removeTyping();
+    const old = messagesEl.querySelector('.chat-choices.ai-exit');
+    if(old) old.remove();
+    if(showMenu) setTimeout(showMainMenu, 100);
+  }
+
+  function startAiMode(){
+    aiMode = true;
+    aiHistory = [];
+    aiBusy = false;
+    stepIndex = -1;
+    addMessage('Sunt asistentul AI Termocor. Puteți să-mi puneți întrebări sau să-mi spuneți ce problemă aveți, iar eu vă ajut să înregistrați o solicitare. Pot greși, așa că înainte de trimitere vă rog să confirmați datele.', 'bot', 'Asistent');
+    setTextInputEnabled(true);
+    input.focus();
+    showAiExit();
+  }
+
+  async function sendAiMessage(text){
+    if(aiBusy) return;
+    if(text.length > MAX_AI_CHARS){
+      addMessage('Mesajul este prea lung (maximum ' + MAX_AI_CHARS + ' de caractere).', 'bot');
+      return;
+    }
+    const userTurns = aiHistory.filter(function(m){ return m.role === 'user'; }).length;
+    if(userTurns >= MAX_AI_TURNS){
+      addMessage('Am atins limita de mesaje pentru această conversație. Vă rugăm să folosiți meniul sau să ne sunați la 0312 345 678.', 'bot', 'Asistent');
+      exitAiMode(true);
+      return;
+    }
+
+    input.value = '';
+    addMessage(text, 'user', 'Client');
+    aiHistory.push({ role: 'user', content: text });
+    aiBusy = true;
+    input.disabled = true;
+    showTyping();
+
+    const ctrl = new AbortController();
+    const timer = setTimeout(function(){ ctrl.abort(); }, 25000);
+    try{
+      const res = await fetch(AI_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: aiHistory }),
+        signal: ctrl.signal
+      });
+      clearTimeout(timer);
+      if(!res.ok) throw new Error('http ' + res.status);
+      const data = await res.json();
+      if(!data || typeof data.reply !== 'string' || !data.reply.trim()) throw new Error('empty');
+      removeTyping();
+      handleAiReply(data.reply);
+    }catch(err){
+      clearTimeout(timer);
+      removeTyping();
+      addMessage('Asistentul AI nu este disponibil momentan. Puteți continua cu opțiunile din meniu sau ne puteți suna la 0312 345 678.', 'bot', 'Asistent');
+      exitAiMode(true);
+      return;
+    }
+    aiBusy = false;
+    if(aiMode){ input.disabled = false; input.focus(); }
+  }
+
+  function handleAiReply(reply){
+    let visible = reply.trim();
+    let payload = null;
+    const idx = reply.indexOf(AI_MARKER);
+    if(idx !== -1){
+      visible = reply.slice(0, idx).trim();
+      const tail = reply.slice(idx + AI_MARKER.length);
+      const a = tail.indexOf('{');
+      const b = tail.lastIndexOf('}');
+      if(a !== -1 && b > a){
+        try{ payload = JSON.parse(tail.slice(a, b + 1)); }catch(e){ payload = null; }
+      }
+    }
+
+    if(visible) addMessage(visible, 'bot', 'Asistent');
+
+    if(idx === -1){
+      aiHistory.push({ role: 'assistant', content: visible });
+      showAiExit();
+      return;
+    }
+
+    const result = validateAiRequest(payload);
+    if(result.error){
+      aiHistory.push({ role: 'assistant', content: (visible || 'Confirmat.') +
+        ' [Solicitarea NU a fost înregistrată: ' + result.error + ' Cere clientului corectarea, reconfirmă și emite din nou blocul.]' });
+      addMessage('Nu am putut înregistra solicitarea: ' + result.error + ' Vă rog să corectați această informație.', 'bot', 'Asistent');
+      showAiExit();
+      return;
+    }
+
+    exitAiMode(false);
+    submitRequest(result.data);
+  }
+
+  function validateAiRequest(p){
+    if(!p || typeof p !== 'object') return { error: 'datele nu au putut fi citite.' };
+    const str = function(v, max){ return (typeof v === 'string' ? v.trim() : '').slice(0, max); };
+    const d = {
+      nume: str(p.nume, 120),
+      telefon: str(p.telefon, 40),
+      email: str(p.email, 120),
+      adresa: str(p.adresa, 250),
+      echipament: str(p.echipament, 60) || 'Nespecificat',
+      tipSolicitare: str(p.tipSolicitare, 80) || 'Nespecificat',
+      urgenta: str(p.urgenta, 60),
+      descriere: str(p.descriere, 1000)
+    };
+    if(!d.nume) return { error: 'lipsește numele.' };
+    if(d.telefon.replace(/[^0-9]/g, '').length < 9) return { error: 'numărul de telefon nu este valid (minim 9 cifre).' };
+    if(!d.adresa) return { error: 'lipsește adresa intervenției.' };
+    if(d.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(d.email)) return { error: 'adresa de email nu este validă.' };
+    const allowed = ['Programare normală', 'Urgent — azi/mâine', 'Avarie — fără căldură'];
+    if(allowed.indexOf(d.urgenta) === -1) return { error: 'nivelul de urgență nu a fost stabilit clar.' };
+    return { data: d };
+  }
+
   function sendMessage(){
     const text = input.value.trim();
-    if(!text || !awaitingText || stepIndex < 0) return;
+    if(!text) return;
+    if(aiMode){ sendAiMessage(text); return; }
+    if(!awaitingText || stepIndex < 0) return;
     input.value = '';
     submitTextAnswer(text);
   }
