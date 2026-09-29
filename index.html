@@ -1053,7 +1053,8 @@
       clearTimeout(timer);
       removeTyping();
       if(err && err.name === 'AbortError') errCode = 'timeout';
-      addMessage('Asistentul AI nu este disponibil momentan (cod: ' + errCode + '). Puteți continua cu opțiunile din meniu sau ne puteți suna la 0312 345 678.', 'bot', 'Asistent');
+      console.warn('Asistent AI indisponibil, cod:', errCode); // codul rămâne vizibil doar în consola browserului (F12)
+      addMessage('Asistentul AI nu este disponibil momentan. Puteți continua cu opțiunile din meniu sau ne puteți suna la 0312 345 678.', 'bot', 'Asistent');
       exitAiMode(true);
       return;
     }
